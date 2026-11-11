@@ -1,0 +1,4 @@
+# dsh bundle patch：把 Blender 桥挂到宿主平面
+- insert:
+    - id: blender-bridge
+      name: dsh-blender-bridge

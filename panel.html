@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Blender Bridge</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161a22; --line: #262c38; --text: #d7dce5;
+    --muted: #8b95a7; --accent: #4C72B0; --ok: #3fb950; --bad: #f85149; --run: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  header { padding: 12px 14px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 10px; position: sticky; top: 0;
+           background: rgba(15,17,21,.92); backdrop-filter: blur(6px); z-index: 5; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .meta { margin-left: auto; color: var(--muted); font-size: 11px; text-align: right; }
+  main { padding: 10px; display: grid; gap: 10px; }
+  .job { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .job .top { display: flex; gap: 8px; align-items: center; padding: 9px 11px; border-bottom: 1px solid var(--line); }
+  .badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor; }
+  .done { color: var(--ok); } .failed { color: var(--bad); } .running { color: var(--run); }
+  .title { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .time { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .body { padding: 10px 11px; display: grid; gap: 8px; }
+  .preview { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: block; background: #000; }
+  .paths { font-family: Consolas, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+  .err { color: var(--bad); font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 16px; }
+  .empty code { color: var(--accent); }
+  .spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--run);
+          border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>Blender Bridge</h1>
+  <span class="meta" id="meta">连接中…</span>
+</header>
+<main id="list"><div class="empty">正在读取任务…</div></main>
+<script>
+const list = document.getElementById('list');
+const meta = document.getElementById('meta');
+let first = true;
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function statusText(s) { return s === 'done' ? '完成' : s === 'failed' ? '失败' : '进行中'; }
+
+function render(data) {
+  const jobs = data.jobs || [];
+  meta.textContent = jobs.length + ' 个任务 · ' + (data.blender || '');
+  if (!jobs.length) {
+    list.innerHTML = '<div class="empty">还没有建模任务。<br>在对话里说 <code>建一个…的模型</code> 即可触发。</div>';
+    return;
+  }
+  list.innerHTML = jobs.map(j => {
+    const cls = j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'running';
+    const img = j.preview ? `<img class="preview" src="/blender-bridge/preview/${encodeURIComponent(j.preview)}?t=${Date.now()}" alt="预览" />` : '';
+    const dur = j.durationMs ? (j.durationMs / 1000).toFixed(1) + 's' : '';
+    const spin = j.status === 'running' ? '<span class="spin"></span>' : '';
+    const err = j.error ? `<div class="err">${esc(j.error)}</div>` : '';
+    const paths = [
+      j.preview ? `预览  ${esc(j.preview)}` : '',
+      j.blend ? `工程  ${esc(j.blend)}` : ''
+    ].filter(Boolean).join('<br>');
+    return `<div class="job">
+      <div class="top">
+        ${spin}<span class="badge ${cls}">${statusText(j.status)}</span>
+        <span class="title">${esc(j.title)}</span>
+        <span class="time">${j.objectCount || 0} 对象 · ${dur}</span>
+      </div>
+      <div class="body">${img}${paths ? `<div class="paths">${paths}</div>` : ''}${err}</div>
+    </div>`;
+  }).join('');
+}
+
+async function tick() {
+  try {
+    const r = await fetch('/blender-bridge/jobs', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    render(await r.json());
+  } catch (e) {
+    meta.textContent = '连接失败：' + e.message;
+  }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
