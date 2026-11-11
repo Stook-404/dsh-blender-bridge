@@ -105,7 +105,7 @@ function disposeAll() {
 }
 
 /* ───────── 3D 视口 ───────── */
-function mount3D(stage, glbUrl) {
+function mount3D(stage, glbUrl, fallbackRel) {
   const W = () => stage.clientWidth || 420;
   const H = () => stage.clientHeight || 320;
 
@@ -175,7 +175,14 @@ function mount3D(stage, glbUrl) {
     loading.remove();
     loaded = true;
   }, undefined, (err) => {
-    loading.textContent = '模型加载失败：' + (err && err.message ? err.message : err);
+    // 3D 模型加载失败（比如旧任务没有 glb、或 CDN 不通）→ 回退静态图
+    console.warn('[blender-bridge] glb 加载失败，回退静态图:', err);
+    if (fallbackRel) {
+      stage.innerHTML = '<img src="/blender-bridge/preview/' + fallbackRel +
+        '" style="width:100%;height:100%;object-fit:contain" alt="预览" />';
+    } else {
+      loading.textContent = '模型加载失败';
+    }
   });
 
   const bar = document.createElement('div');
@@ -246,9 +253,14 @@ function mount3D(stage, glbUrl) {
 }
 
 /* ───────── 渲染 ───────── */
+// 面板只展示两件作品：完整版在上，白模在下
+const SHOW_ORDER = [/完整版/, /白模/];
+
 function render(data) {
-  const jobs = data.jobs || [];
-  meta.textContent = jobs.length + ' 个任务 · ' + (data.blender || '');
+  const allJobs = data.jobs || [];
+  const picked = SHOW_ORDER.map((re) => allJobs.find((x) => re.test(x.title || ''))).filter(Boolean);
+  const jobs = picked.length ? picked : allJobs;
+  meta.textContent = jobs.length + ' 个模型 · ' + (data.blender || '');
 
   if (!jobs.length) {
     disposeAll();
@@ -265,9 +277,10 @@ function render(data) {
 
   list.innerHTML = jobs.map(j => {
     const cls = j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'running';
-    const use3D = !!(j.glb && THREE);
+    const glbRel = j.glb || (j.preview ? j.preview.replace(/preview\.png$/, 'scene.glb') : null);
+    const use3D = !!(THREE && glbRel);
     const stage = use3D
-      ? `<div class="stage" data-glb="/blender-bridge/preview/${encodeURIComponent(j.glb)}"></div>`
+      ? `<div class="stage" data-glb="/blender-bridge/preview/${encodeURIComponent(glbRel)}" data-img="${encodeURIComponent(j.preview || '')}"></div>`
       : (j.preview ? `<div class="viewer"><img src="/blender-bridge/preview/${encodeURIComponent(j.preview)}" alt="预览" draggable="false" /></div>` : '');
 
     const hint = use3D
@@ -295,7 +308,7 @@ function render(data) {
 
   const mounted = [];
   list.querySelectorAll('.stage[data-glb]').forEach((el) => {
-    try { mounted.push(mount3D(el, el.dataset.glb)); }
+    try { mounted.push(mount3D(el, el.dataset.glb, el.dataset.img)); }
     catch (e) { el.innerHTML = '<div class="loading">3D 视口初始化失败：' + esc(e.message) + '</div>'; }
   });
   mounted.forEach((v, i) => viewers.set('v' + i, v));

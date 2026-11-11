@@ -1,7 +1,7 @@
 {
   "name": "dsh-blender-bridge",
   "version": "0.1.0",
-  "description": "Blender bridge for DeepSeek Harness: build models headlessly, render previews, show progress in a side panel.",
+  "description": "DeepSeek Harness plugin: headless Blender modeling with a live 3D viewport",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -25,7 +25,8 @@
     "python",
     "panel.html",
     "cordis.patch.yml",
-    "client.js"
+    "client.js",
+    "docs"
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
@@ -38,5 +39,23 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "blender",
+    "3d",
+    "gltf",
+    "threejs",
+    "modeling"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Stook-404/dsh-blender-bridge.git"
+  },
+  "homepage": "https://github.com/Stook-404/dsh-blender-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/Stook-404/dsh-blender-bridge/issues"
+  }
 }
