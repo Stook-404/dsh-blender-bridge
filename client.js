@@ -1,16 +1,27 @@
 /**
- * dsh-blender-bridge 客户端模块（v4）
- * 依据 Console 实测：sidebarRightTabs 服务可用(tabs=true)，path A 需 inject:['slots']。
+ * dsh-blender-bridge · client
+ *
+ * 在右侧栏注册一个「Blender」标签页，内容为 /blender-bridge/panel 面板。
+ *
+ * 注册方式（照 dsh-plugin-wallpaper-engine 的可用实现）：
+ *   1. 服务必须通过 ctx.inject([...], owner => ...) 的子 ctx 获取。
+ *      - ctx.get('slots') 在插件根 ctx 上返回 undefined，取不到服务。
+ *      - 在模块级写 inject: ['slots'] 会让插件在缺该服务的宿主上被 park，
+ *        apply 根本不执行。
+ *   2. 两段注册：
+ *      - tab 类型：sidebarRightTabs.register({ id, kind, keepMounted, title, guide })
+ *        guide 条目需带 id 与 description，否则菜单不显示。
+ *      - tab 身体：slots.register({ name: 'sidebar.right.pane.tab', key: id }, Component)
+ *   3. 任何服务取不到时静默退出，绝不影响宿主界面。
  */
 (() => {
-  try { console.log('[dsh-blender-bridge] client module loaded'); } catch {}
-  const TAB_ID = 'dsh-blender-bridge';
-  const TAB_KIND = 'blender-bridge';
+  const ID = 'dsh-blender-bridge';
+  const KIND = 'blender-bridge';
   const SLOT = 'sidebar.right.pane.tab';
   const PANEL = '/blender-bridge/panel';
 
   window.__ModuleLoader__.load({
-    id: 'dsh-blender-bridge',
+    id: ID,
     factory: (require2) => {
       const React = require2('react');
 
@@ -18,47 +29,50 @@
         return React.createElement('iframe', {
           src: PANEL,
           title: 'Blender',
-          style: { width: '100%', height: '100%', minHeight: '420px', border: '0', display: 'block', background: '#0f1115' },
+          style: {
+            width: '100%',
+            height: '100%',
+            minHeight: '420px',
+            border: '0',
+            display: 'block',
+            background: '#0f1115',
+          },
         });
       }
 
       return {
-        name: 'dsh-blender-bridge',
-        inject: ['slots'],
+        name: ID,
+        inject: [],
         apply(ctx) {
-          try { console.log('[dsh-blender-bridge] apply called'); } catch {}
-          const meta = { name: SLOT, key: TAB_ID, inject: () => ({ inSidebar: true }) };
-
           try {
-            ctx.slots.register(meta, BlenderPanel);
-            try { console.log('[dsh-blender-bridge] path A ok'); } catch {}
-          } catch (e) {
-            try { console.warn('[dsh-blender-bridge] path A failed:', e && e.message); } catch {}
-          }
-
-          try {
-            ctx.inject(['sidebarRightTabs'], (owner) => {
+            ctx.inject(['sidebarRightTabs', 'slots'], (owner) => {
               const tabs = owner.get('sidebarRightTabs');
-              const hasSlots = !!(owner.slots && owner.slots.register);
-              try { console.log('[dsh-blender-bridge] path B tabs=', !!tabs, 'owner.slots=', hasSlots); } catch {}
+              const slots = owner.get('slots') || owner.slots;
+
               if (tabs && typeof tabs.register === 'function') {
-                owner.effect(() => tabs.register({
-                  id: TAB_ID, kind: TAB_KIND, priority: 'extension',
-                  title: () => 'Blender', guide: [{ order: 120, title: () => 'Blender' }],
-                }), 'dsh-blender-bridge: sidebar tab type');
-                try { console.log('[dsh-blender-bridge] path B tab type registered'); } catch {}
+                try {
+                  tabs.register({
+                    id: ID,
+                    kind: KIND,
+                    keepMounted: true,
+                    title: () => 'Blender',
+                    guide: [{
+                      id: 'panel',
+                      order: 120,
+                      title: () => 'Blender',
+                      description: () => '用 Blender 建模并预览',
+                    }],
+                  });
+                } catch { /* 宿主不支持该能力，降级 */ }
               }
-              if (hasSlots) {
-                const r = owner.slots.register.bind(owner.slots);
-                owner.slots.inject(SLOT, () => r(meta, BlenderPanel));
-                try { console.log('[dsh-blender-bridge] path B slot injected'); } catch {}
-              } else {
-                try { console.warn('[dsh-blender-bridge] path B: owner.slots missing'); } catch {}
+
+              if (slots && typeof slots.register === 'function') {
+                try {
+                  slots.register({ name: SLOT, key: ID }, BlenderPanel);
+                } catch { /* 同上 */ }
               }
             });
-          } catch (e) {
-            try { console.warn('[dsh-blender-bridge] path B failed:', e && e.message); } catch {}
-          }
+          } catch { /* 服务不可用：只保留工具与面板 URL，不影响宿主 */ }
         },
       };
     },

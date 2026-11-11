@@ -90,3 +90,42 @@ dsh plugin --profile desktop remove dsh-blender-bridge
 ```
 
 源码目录 `D:\Tools\dsh-blender-bridge` 与产物目录 `C:\Users\admin\.dsh\blender-out` 需手动删除。
+
+
+## 侧边栏标签
+
+插件会在 DeepSeek Harness 右侧栏注册一个 **Blender** 标签页，内容即 `/blender-bridge/panel` 面板（建模任务列表 + 预览图，2 秒自动刷新）。
+
+### 宿主脚本需要的两段注册
+
+```js
+ctx.inject(['sidebarRightTabs', 'slots'], (owner) => {
+  const tabs  = owner.get('sidebarRightTabs')
+  const slots = owner.get('slots') || owner.slots
+
+  // ① tab 类型：决定右侧栏菜单里出现什么
+  tabs.register({
+    id: 'dsh-blender-bridge',
+    kind: 'blender-bridge',
+    keepMounted: true,
+    title: () => 'Blender',
+    guide: [{ id: 'panel', order: 120, title: () => 'Blender', description: () => '用 Blender 建模并预览' }],
+  })
+
+  // ② tab 身体：提供渲染组件
+  slots.register({ name: 'sidebar.right.pane.tab', key: 'dsh-blender-bridge' }, BlenderPanel)
+})
+```
+
+### 三个坑（实测）
+
+| 写法 | 结果 | 原因 |
+|---|---|---|
+| 模块级 `inject: ['slots']` | ❌ 侧边栏无按钮 | 缺该服务的宿主会把插件 park，`apply` 不执行 |
+| `ctx.get('slots')` | ❌ `slots === undefined` | 根 ctx 取不到服务 |
+| `ctx.inject(['slots'], owner => ...)` | ✅ 可用 | 子 ctx 才有服务 |
+| 只注入 `sidebarRightTabs` | ❌ `owner.slots` 为 undefined | 两个服务必须一起注入 |
+
+`guide` 条目缺 `id` 或 `description` 时，标签不会出现在菜单里——这是最隐蔽的一处。
+
+宿主没有右侧栏时，插件仍正常工作：工具与面板 URL 都不受影响。
