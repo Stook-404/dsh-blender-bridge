@@ -8,6 +8,7 @@ spec.json 结构见 README。脚本最后会打印一行：
 供宿主插件解析。
 """
 import bpy
+import os
 import sys
 import json
 import math
@@ -195,6 +196,20 @@ def main():
     sc.view_settings.view_transform = "Filmic" if "Filmic" in [v.name for v in sc.view_settings.bl_rna.properties["view_transform"].enum_items] else sc.view_settings.view_transform
 
     bpy.ops.wm.save_as_mainfile(filepath=out_blend)
+
+    # 导出 glTF，供面板里的 3D 视口直接加载（可拖拽环绕 / 滚轮缩放）
+    out_glb = os.path.join(os.path.dirname(out_blend), "scene.glb")
+    try:
+        bpy.ops.export_scene.gltf(
+            filepath=out_glb,
+            export_format="GLB",
+            export_apply=True,
+            use_selection=False,
+            export_yup=True,
+        )
+    except Exception as exc:
+        print("GLTF_EXPORT_FAILED " + str(exc))
+        out_glb = ""
     bpy.ops.render.render(write_still=True)
 
     print("RESULT " + json.dumps({
@@ -205,6 +220,7 @@ def main():
         "radius": radius,
         "blend": out_blend,
         "preview": out_png,
+          "glb": out_glb,
     }, ensure_ascii=False))
 
 

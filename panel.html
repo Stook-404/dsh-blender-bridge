@@ -34,39 +34,43 @@
           border-radius: 50%; animation: sp .8s linear infinite; }
   @keyframes sp { to { transform: rotate(360deg); } }
 
-  /* ── 可交互预览视图器 ── */
-  .viewer {
+  /* ── 3D 视口 ── */
+  .stage {
     position: relative; width: 100%; border-radius: 8px; border: 1px solid var(--line);
-    background: #07090c; overflow: hidden; cursor: grab; touch-action: none;
-    aspect-ratio: 4 / 3;
+    background: #0b0e13; overflow: hidden; aspect-ratio: 4 / 3; touch-action: none;
   }
-  .viewer.dragging { cursor: grabbing; }
-  .viewer img {
-    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
-    transform-origin: center center; pointer-events: none; user-select: none;
-    transition: transform .06s linear;
-  }
-  .viewer.free img { transition: none; }
-  .tools {
+  .stage canvas { display: block; width: 100% !important; height: 100% !important; }
+  .stage .overlay {
     position: absolute; right: 8px; bottom: 8px; display: flex; gap: 4px;
-    background: rgba(10,13,18,.82); border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(10,13,18,.8); border: 1px solid var(--line); border-radius: 8px;
     padding: 4px; backdrop-filter: blur(4px); opacity: .35; transition: opacity .15s;
   }
-  .viewer:hover .tools { opacity: 1; }
-  .tools button {
-    width: 26px; height: 26px; border-radius: 6px; border: 1px solid transparent;
-    background: transparent; color: var(--text); cursor: pointer; font-size: 14px;
-    display: grid; place-items: center; line-height: 1;
+  .stage:hover .overlay { opacity: 1; }
+  .stage .overlay button {
+    min-width: 26px; height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid transparent;
+    background: transparent; color: var(--text); cursor: pointer; font-size: 12px;
+    display: grid; place-items: center;
   }
-  .tools button:hover { background: rgba(255,255,255,.08); border-color: var(--line); }
-  .zoomtag {
-    position: absolute; left: 8px; bottom: 8px; font-size: 10px; color: var(--muted);
-    background: rgba(10,13,18,.78); border: 1px solid var(--line); border-radius: 6px;
-    padding: 2px 7px; font-family: Consolas, monospace; opacity: 0; transition: opacity .15s;
+  .stage .overlay button:hover { background: rgba(255,255,255,.08); border-color: var(--line); }
+  .stage .overlay button.on { background: rgba(76,114,176,.35); border-color: var(--accent); }
+  .stage .loading {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--muted); font-size: 11px; pointer-events: none;
   }
-  .viewer:hover .zoomtag { opacity: 1; }
   .hint { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .viewer { position: relative; width: 100%; border-radius: 8px; border: 1px solid var(--line);
+            background: #07090c; overflow: hidden; aspect-ratio: 4 / 3; }
+  .viewer img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
 <header>
@@ -75,180 +79,226 @@
   <span class="meta" id="meta">连接中…</span>
 </header>
 <main id="list"><div class="empty">正在读取任务…</div></main>
-<script>
+
+<script type="module">
 const list = document.getElementById('list');
 const meta = document.getElementById('meta');
 
-// 每个任务的视图状态：scale / tx / ty / rot，重建 DOM 后恢复
-const state = new Map();
+let THREE = null, OrbitControls = null, GLTFLoader = null;
+try {
+  THREE = await import('three');
+  ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+  ({ GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js'));
+} catch (e) {
+  console.warn('[blender-bridge] three.js 加载失败，回退静态图:', e);
+}
+
+const viewers = new Map();
 let lastSig = '';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const statusText = (s) => s === 'done' ? '完成' : s === 'failed' ? '失败' : '进行中';
 
-function getState(id) {
-  if (!state.has(id)) state.set(id, { scale: 1, tx: 0, ty: 0, rot: 0 });
-  return state.get(id);
+function disposeAll() {
+  for (const v of viewers.values()) { try { v.dispose(); } catch { /* ignore */ } }
+  viewers.clear();
 }
 
-function apply(sv, img, tag) {
-  img.style.transform = `translate(${sv.tx}px, ${sv.ty}px) scale(${sv.scale}) rotate(${sv.rot}deg)`;
-  if (tag) tag.textContent = Math.round(sv.scale * 100) + '% · ' + Math.round(sv.rot) + '°';
-}
+/* ───────── 3D 视口 ───────── */
+function mount3D(stage, glbUrl) {
+  const W = () => stage.clientWidth || 420;
+  const H = () => stage.clientHeight || 320;
 
-// 给一个 .viewer 容器绑定交互
-function bindViewer(container, id) {
-  const img = container.querySelector('img');
-  const tag = container.querySelector('.zoomtag');
-  const sv = getState(id);
-  apply(sv, img, tag);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  renderer.setSize(W(), H(), false);
+  if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  stage.appendChild(renderer.domElement);
 
-  let mode = null, sx = 0, sy = 0, ox = 0, oy = 0, orot = 0, oscale = 0, cx = 0, cy = 0;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0e13);
 
-  const setScale = (next, px, py) => {
-    const clamped = Math.min(20, Math.max(0.15, next));
-    const k = clamped / sv.scale;
-    if (px !== undefined) {
-      // 以光标为中心缩放
-      sv.tx = px - (px - sv.tx) * k;
-      sv.ty = py - (py - sv.ty) * k;
-    }
-    sv.scale = clamped;
+  const camera = new THREE.PerspectiveCamera(45, W() / H(), 0.05, 100000);
+  camera.position.set(60, 50, 70);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3340, 2.4));
+  const key = new THREE.DirectionalLight(0xffffff, 2.4); key.position.set(80, 120, 60); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xa9c4e6, 1.1); fill.position.set(-90, 40, -70); scene.add(fill);
+  const bounce = new THREE.DirectionalLight(0xffffff, 0.7); bounce.position.set(0, -60, 0); scene.add(bounce);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.85;
+  controls.zoomSpeed = 0.9;
+  controls.panSpeed = 0.8;
+  controls.minDistance = 0.5;
+  controls.maxDistance = 100000;
+
+  const loading = document.createElement('div');
+  loading.className = 'loading';
+  loading.textContent = '加载模型…';
+  stage.appendChild(loading);
+
+  let loaded = false, disposed = false, modelRadius = 1;
+
+  const loader = new GLTFLoader();
+  loader.load(glbUrl, (gltf) => {
+    if (disposed) return;
+    const model = gltf.scene;
+    scene.add(model);
+
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+    modelRadius = radius;
+
+    model.position.set(-center.x, -box.min.y, -center.z);
+
+    const grid = new THREE.GridHelper(radius * 8, 16, 0x2b3442, 0x1a2029);
+    grid.position.y = 0;
+    scene.add(grid);
+
+    const dist = radius * 3.1;
+    camera.position.set(dist * 0.8, radius * 1.5 + dist * 0.32, dist * 0.8);
+    camera.near = Math.max(radius / 800, 0.01);
+    camera.far = radius * 800;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, radius * 0.95, 0);
+    controls.maxDistance = radius * 30;
+    controls.update();
+    controls.saveState();
+
+    loading.remove();
+    loaded = true;
+  }, undefined, (err) => {
+    loading.textContent = '模型加载失败：' + (err && err.message ? err.message : err);
+  });
+
+  const bar = document.createElement('div');
+  bar.className = 'overlay';
+  const mk = (label, title, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label; b.title = title;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(b); });
+    bar.appendChild(b);
+    return b;
   };
-
-  container.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    container.classList.add('free');
-    const r = container.getBoundingClientRect();
-    setScale(sv.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2);
-    apply(sv, img, tag);
-  }, { passive: false });
-
-  container.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    container.classList.add('dragging', 'free');
-    const r = container.getBoundingClientRect();
-    cx = r.left + r.width / 2; cy = r.top + r.height / 2;
-    sx = e.clientX; sy = e.clientY; ox = sv.tx; oy = sv.ty; orot = sv.rot; oscale = sv.scale;
-    mode = (e.button === 2 || e.shiftKey) ? 'rotate' : 'pan';
+  mk('⤢', '复位视角（双击画布同效）', () => controls.reset());
+  mk('⌂', '正视图', () => {
+    camera.position.set(0, modelRadius * 0.95, modelRadius * 3.2);
+    controls.target.set(0, modelRadius * 0.95, 0);
+    controls.update();
   });
+  let autoRotate = false;
+  mk('⟳', '自动旋转', (b) => {
+    autoRotate = !autoRotate;
+    controls.autoRotate = autoRotate;
+    controls.autoRotateSpeed = 1.6;
+    b.classList.toggle('on', autoRotate);
+  });
+  stage.appendChild(bar);
 
-  window.addEventListener('mousemove', (e) => {
-    if (!mode) return;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (mode === 'pan') {
-      sv.tx = ox + dx; sv.ty = oy + dy;
-    } else {
-      const a0 = Math.atan2(sy - cy, sx - cx);
-      const a1 = Math.atan2(e.clientY - cy, e.clientX - cx);
-      sv.rot = orot + (a1 - a0) * 180 / Math.PI;
-    }
-    apply(sv, img, tag);
-  });
+  renderer.domElement.addEventListener('dblclick', () => controls.reset());
 
-  window.addEventListener('mouseup', () => {
-    if (!mode) return;
-    mode = null;
-    container.classList.remove('dragging');
-  });
+  let raf = 0;
+  const tick = () => {
+    if (disposed) return;
+    raf = requestAnimationFrame(tick);
+    if (loaded) controls.update();
+    renderer.render(scene, camera);
+  };
+  tick();
 
-  container.addEventListener('contextmenu', (e) => e.preventDefault());
-  container.addEventListener('dblclick', () => {
-    Object.assign(sv, { scale: 1, tx: 0, ty: 0, rot: 0 });
-    apply(sv, img, tag);
+  const ro = new ResizeObserver(() => {
+    const w = W(), h = H();
+    if (!w || !h) return;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
   });
+  ro.observe(stage);
 
-  // 触屏：单指平移，双指缩放旋转
-  let pts = new Map(), baseDist = 0, baseAng = 0;
-  container.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'touch') return;
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pts.size === 2) {
-      const [a, b] = [...pts.values()];
-      baseDist = Math.hypot(a.x - b.x, a.y - b.y);
-      baseAng = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
-      oscale = sv.scale; orot = sv.rot;
-    }
-  });
-  container.addEventListener('pointermove', (e) => {
-    if (!pts.has(e.pointerId)) return;
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pts.size === 2) {
-      const [a, b] = [...pts.values()];
-      const d = Math.hypot(a.x - b.x, a.y - b.y);
-      const ang = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
-      if (baseDist) sv.scale = Math.min(20, Math.max(0.15, oscale * (d / baseDist)));
-      sv.rot = orot + (ang - baseAng);
-      apply(sv, img, tag);
-    }
-  });
-  const drop = (e) => { pts.delete(e.pointerId); if (pts.size < 2) baseDist = 0; };
-  container.addEventListener('pointerup', drop);
-  container.addEventListener('pointercancel', drop);
-
-  // 工具条
-  container.querySelectorAll('[data-act]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const act = btn.dataset.act;
-      if (act === 'in') sv.scale = Math.min(20, sv.scale * 1.25);
-      if (act === 'out') sv.scale = Math.max(0.15, sv.scale / 1.25);
-      if (act === 'cw') sv.rot += 15;
-      if (act === 'ccw') sv.rot -= 15;
-      if (act === 'fit') Object.assign(sv, { scale: 1, tx: 0, ty: 0, rot: 0 });
-      apply(sv, img, tag);
-    });
-  });
+  return {
+    dispose() {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      controls.dispose();
+      renderer.dispose();
+      scene.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach((m) => {
+            for (const k in m) { const v = m[k]; if (v && v.isTexture) v.dispose(); }
+            m.dispose();
+          });
+        }
+      });
+      const cv = renderer.domElement;
+      if (cv && cv.parentNode) cv.parentNode.removeChild(cv);
+    },
+  };
 }
 
+/* ───────── 渲染 ───────── */
 function render(data) {
   const jobs = data.jobs || [];
   meta.textContent = jobs.length + ' 个任务 · ' + (data.blender || '');
 
   if (!jobs.length) {
+    disposeAll();
     list.innerHTML = '<div class="empty">还没有建模任务。<br>在对话里说 <code>建一个…的模型</code> 即可触发。</div>';
     lastSig = '';
     return;
   }
 
-  // 数据没变就不重建 DOM —— 否则每次刷新都会打断缩放/旋转
-  const sig = jobs.map(j => j.id + '|' + j.status + '|' + (j.preview || '') + '|' + (j.objectCount || 0)).join('#');
+  const sig = jobs.map(j => j.id + '|' + j.status + '|' + (j.glb || j.preview || '') + '|' + (j.objectCount || 0)).join('#');
   if (sig === lastSig) return;
   lastSig = sig;
 
+  disposeAll();
+
   list.innerHTML = jobs.map(j => {
     const cls = j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'running';
-    const viewer = j.preview ? `<div class="viewer" data-job="${esc(j.id)}">
-        <img src="/blender-bridge/preview/${encodeURIComponent(j.preview)}?t=${encodeURIComponent(j.id)}" alt="预览" draggable="false" />
-        <span class="zoomtag">100% · 0°</span>
-        <div class="tools">
-          <button data-act="in"  title="放大">＋</button>
-          <button data-act="out" title="缩小">－</button>
-          <button data-act="ccw" title="逆时针旋转 15°">⟲</button>
-          <button data-act="cw"  title="顺时针旋转 15°">⟳</button>
-          <button data-act="fit" title="复位">⤢</button>
-        </div>
-      </div>` : '';
-    const hint = j.preview ? '<div class="hint">滚轮缩放 · 拖拽平移 · 右键/Shift 拖拽旋转 · 双击复位</div>' : '';
+    const use3D = !!(j.glb && THREE);
+    const stage = use3D
+      ? `<div class="stage" data-glb="/blender-bridge/preview/${encodeURIComponent(j.glb)}"></div>`
+      : (j.preview ? `<div class="viewer"><img src="/blender-bridge/preview/${encodeURIComponent(j.preview)}" alt="预览" draggable="false" /></div>` : '');
+
+    const hint = use3D
+      ? '<div class="hint">左键拖拽环绕 · 滚轮缩放 · 右键拖拽平移 · 双击复位</div>'
+      : (j.preview ? '<div class="hint">静态预览图（本次任务未生成 glTF）</div>' : '');
+
     const dur = j.durationMs ? (j.durationMs / 1000).toFixed(1) + 's' : '';
     const spin = j.status === 'running' ? '<span class="spin"></span>' : '';
     const err = j.error ? `<div class="err">${esc(j.error)}</div>` : '';
     const paths = [
       j.preview ? `预览  ${esc(j.preview)}` : '',
+      j.glb ? `模型  ${esc(j.glb)}` : '',
       j.blend ? `工程  ${esc(j.blend)}` : ''
     ].filter(Boolean).join('<br>');
+
     return `<div class="job">
       <div class="top">
         ${spin}<span class="badge ${cls}">${statusText(j.status)}</span>
         <span class="title">${esc(j.title)}</span>
         <span class="time">${j.objectCount || 0} 对象 · ${dur}</span>
       </div>
-      <div class="body">${viewer}${hint}${paths ? `<div class="paths">${paths}</div>` : ''}${err}</div>
+      <div class="body">${stage}${hint}${paths ? `<div class="paths">${paths}</div>` : ''}${err}</div>
     </div>`;
   }).join('');
 
-  // 重建后重新绑定交互并恢复各自的缩放/旋转状态
-  list.querySelectorAll('.viewer').forEach((el) => bindViewer(el, el.dataset.job));
+  const mounted = [];
+  list.querySelectorAll('.stage[data-glb]').forEach((el) => {
+    try { mounted.push(mount3D(el, el.dataset.glb)); }
+    catch (e) { el.innerHTML = '<div class="loading">3D 视口初始化失败：' + esc(e.message) + '</div>'; }
+  });
+  mounted.forEach((v, i) => viewers.set('v' + i, v));
 }
 
 async function tick() {
